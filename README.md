@@ -1,6 +1,6 @@
 # Dollar Rates
 
-Dominican Republic bank exchange rate API built with Rust, Rocket, and PostgreSQL. Deployed on [Shuttle.dev](https://www.shuttle.dev/).
+Dominican Republic bank exchange rate API built with Rust, Rocket, and PostgreSQL. Deployed on [Render](https://render.com/).
 
 ## Supported Banks
 
@@ -148,22 +148,39 @@ All three banks are fetched concurrently using `tokio::join!`. Each rate update 
 ## Tech Stack
 
 - **Rust** with [Rocket](https://rocket.rs/) web framework
-- **PostgreSQL** via [Shuttle Shared DB](https://docs.shuttle.dev/resources/shuttle-shared-db)
+- **PostgreSQL** via Render managed database
 - **sqlx** for async database queries and migrations
 - **reqwest** for HTTP requests to bank sources
 - **regex** for HTML parsing (Banreservas)
 
-## Deploy
+## Deploy on Render
 
-```bash
-cargo install cargo-shuttle
-cargo shuttle login
-cargo shuttle deploy
-```
+### Option 1: Blueprint (recommended)
+
+1. Push this repo to GitHub
+2. Go to [Render Dashboard](https://dashboard.render.com/) > **Blueprints** > **New Blueprint Instance**
+3. Connect your repo — Render will use `render.yaml` to create the web service + Postgres database automatically
+
+### Option 2: Manual
+
+1. Create a **PostgreSQL** database in Render
+2. Create a **Web Service** with:
+   - **Runtime:** Docker
+   - **Environment variable:** `DATABASE_URL` = your Render Postgres internal connection string
 
 ## Local Development
 
 ```bash
-# Requires a running PostgreSQL instance
-cargo shuttle run
+# Set your local Postgres connection
+export DATABASE_URL="postgres://user:pass@localhost:5432/dollar_rates"
+
+# Run
+cargo run
 ```
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string |
+| `PORT` | No | `10000` | HTTP server port (Render sets this automatically) |

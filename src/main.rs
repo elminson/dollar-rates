@@ -3,9 +3,10 @@ mod fetchers;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use rocket::serde::json::Json;
-use rocket::{get, routes, State};
+use rocket::{get, launch, routes, State};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::env;
 use tokio::time::{interval, Duration};
 use tracing::{error, info};
 
@@ -99,7 +100,6 @@ async fn upsert_rate(pool: &PgPool, rate: &fetchers::FetchedRate) {
                 "Updated {}: buy={:.2} sell={:.2}",
                 rate.bank_class, rate.dollar_buy_rate, rate.dollar_sell_rate
             );
-            // Log the change for history
             let _ = sqlx::query(
                 "INSERT INTO bank_rates_log (bank_name, bank_class, dollar_buy_rate, dollar_sell_rate) VALUES ($1, $2, $3, $4)",
             )
@@ -142,10 +142,14 @@ async fn rate_updater(pool: PgPool, interval_minutes: u64) {
 
 // --- Entry point ---
 
-#[shuttle_runtime::main]
-async fn rocket(
-    #[shuttle_shared_db::Postgres] pool: PgPool,
-) -> shuttle_rocket::ShuttleRocket {
+#[launch]
+async fn rocket() -> _ {
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    let pool = PgPool::connect(&database_url)
+        .await
+        .expect("Failed to connect to database");
+
     // Run migrations
     sqlx::migrate!()
         .run(&pool)
@@ -160,9 +164,16 @@ async fn rocket(
     let updater_pool = pool.clone();
     tokio::spawn(rate_updater(updater_pool, 30));
 
-    let rocket = rocket::build()
-        .manage(pool)
-        .mount("/", routes![health, get_rates, get_rate_by_bank]);
+    let port: u16 = env::var("PORT")
+        .unwrap_or_else(|_| "10000".to_string())
+        .parse()
+        .expect("PORT must be a number");
 
-    Ok(rocket.into())
+    let figment = rocket::Config::figment()
+        .merge(("port", port))
+        .merge(("address", "0.0.0.0"));
+
+    rocket::custom(figment)
+        .manage(pool)
+        .mount("/", routes![health, get_rates, get_rate_by_bank])
 }
