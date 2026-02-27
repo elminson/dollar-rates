@@ -1,6 +1,7 @@
 use reqwest::Client;
 use serde::Deserialize;
-use tracing::error;
+use std::env;
+use tracing::{error, info};
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
 
@@ -106,11 +107,13 @@ pub async fn fetch_bhd(client: &Client) -> Option<FetchedRate> {
 pub async fn fetch_popular(client: &Client) -> Option<FetchedRate> {
     // Banco Popular exposes rates via SharePoint REST API (XML/OData).
     // Fields: d:DollarBuyRate, d:DollarSellRate
-    // Note: Site is behind Incapsula WAF — may block some IPs.
-    let url = "https://popularenlinea.com/_api/web/lists/getbytitle('Rates')/items?$filter=ItemID%20eq%20%271%27";
+    // Site is behind Incapsula WAF — use POPULAR_PROXY_URL to route through a proxy if blocked.
+    let default_url = "https://popularenlinea.com/_api/web/lists/getbytitle('Rates')/items?$filter=ItemID%20eq%20%271%27";
+    let url = env::var("POPULAR_PROXY_URL").unwrap_or_else(|_| default_url.to_string());
+    info!("Popular: fetching from {url}");
 
     let response = client
-        .get(url)
+        .get(&url)
         .header("User-Agent", USER_AGENT)
         .header("Accept", "application/xml")
         .send()

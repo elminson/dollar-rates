@@ -184,3 +184,4 @@ cargo run
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string |
 | `PORT` | No | `10000` | HTTP server port (Render sets this automatically) |
+| `POPULAR_PROXY_URL` | No | Direct to popularenlinea.com | Proxy URL for Popular's SharePoint API (site is behind Incapsula WAF). Set this to a proxy that forwards to `https://popularenlinea.com/_api/web/lists/getbytitle('Rates')/items?$filter=ItemID%20eq%20%271%27` |
