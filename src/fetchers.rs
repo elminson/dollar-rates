@@ -104,14 +104,15 @@ pub async fn fetch_bhd(client: &Client) -> Option<FetchedRate> {
 }
 
 pub async fn fetch_popular(client: &Client) -> Option<FetchedRate> {
-    // Banco Popular's site is behind Incapsula WAF which blocks non-browser requests.
-    // We attempt to scrape anyway — it may work from certain server IPs.
-    // The rate values are in input fields: compra_peso_dolar_modal (buy) and venta_peso_dolar_modal (sell).
+    // Banco Popular exposes rates via SharePoint REST API (XML/OData).
+    // Fields: d:DollarBuyRate, d:DollarSellRate
+    // Note: Site is behind Incapsula WAF — may block some IPs.
+    let url = "https://popularenlinea.com/_api/web/lists/getbytitle('Rates')/items?$filter=ItemID%20eq%20%271%27";
+
     let response = client
-        .get("https://popularenlinea.com/personas/Paginas/Home.aspx")
+        .get(url)
         .header("User-Agent", USER_AGENT)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-        .header("Accept-Language", "es-DO,es;q=0.9,en;q=0.8")
+        .header("Accept", "application/xml")
         .send()
         .await
         .map_err(|e| error!("Popular request failed: {e}"))
@@ -122,54 +123,31 @@ pub async fn fetch_popular(client: &Client) -> Option<FetchedRate> {
         return None;
     }
 
-    let html = response
+    let xml = response
         .text()
         .await
         .map_err(|e| error!("Popular body read failed: {e}"))
         .ok()?;
 
-    // Try to extract buy rate from compra_peso_dolar_modal input value
-    let buy_re = regex::Regex::new(
-        r#"id="compra_peso_dolar_modal"[^>]*value="(\d+\.?\d*)""#
-    ).ok()?;
-    // Try to extract sell rate from venta_peso_dolar_modal input value
-    let sell_re = regex::Regex::new(
-        r#"id="venta_peso_dolar_modal"[^>]*value="(\d+\.?\d*)""#
-    ).ok()?;
+    let buy_re = regex::Regex::new(r"<d:DollarBuyRate[^>]*>(\d+\.?\d*)</d:DollarBuyRate>").ok()?;
+    let sell_re = regex::Regex::new(r"<d:DollarSellRate[^>]*>(\d+\.?\d*)</d:DollarSellRate>").ok()?;
 
-    let buy = buy_re.captures(&html);
-    let sell = sell_re.captures(&html);
+    let buy_rate: f64 = buy_re
+        .captures(&xml)
+        .or_else(|| { error!("Popular: DollarBuyRate not found in XML"); None })?[1]
+        .parse()
+        .ok()?;
 
-    if let (Some(buy_caps), Some(sell_caps)) = (buy, sell) {
-        let buy_rate: f64 = buy_caps[1].parse().ok()?;
-        let sell_rate: f64 = sell_caps[1].parse().ok()?;
-        return Some(FetchedRate {
-            bank_name: "Banco Popular".into(),
-            bank_class: "popular".into(),
-            dollar_buy_rate: buy_rate,
-            dollar_sell_rate: sell_rate,
-        });
-    }
+    let sell_rate: f64 = sell_re
+        .captures(&xml)
+        .or_else(|| { error!("Popular: DollarSellRate not found in XML"); None })?[1]
+        .parse()
+        .ok()?;
 
-    // Fallback: try to find rates set via JavaScript (e.g. .val('60.10') or = '60.10')
-    let js_buy_re = regex::Regex::new(
-        r#"compra_peso_dolar_modal[^)]*?(\d{2,3}\.\d{2})"#
-    ).ok()?;
-    let js_sell_re = regex::Regex::new(
-        r#"venta_peso_dolar_modal[^)]*?(\d{2,3}\.\d{2})"#
-    ).ok()?;
-
-    if let (Some(buy_caps), Some(sell_caps)) = (js_buy_re.captures(&html), js_sell_re.captures(&html)) {
-        let buy_rate: f64 = buy_caps[1].parse().ok()?;
-        let sell_rate: f64 = sell_caps[1].parse().ok()?;
-        return Some(FetchedRate {
-            bank_name: "Banco Popular".into(),
-            bank_class: "popular".into(),
-            dollar_buy_rate: buy_rate,
-            dollar_sell_rate: sell_rate,
-        });
-    }
-
-    error!("Popular: could not parse rates from HTML");
-    None
+    Some(FetchedRate {
+        bank_name: "Banco Popular".into(),
+        bank_class: "popular".into(),
+        dollar_buy_rate: buy_rate,
+        dollar_sell_rate: sell_rate,
+    })
 }
