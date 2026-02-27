@@ -3,7 +3,7 @@ mod fetchers;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use rocket::serde::json::Json;
-use rocket::{get, launch, routes, State};
+use rocket::{get, head, launch, routes, State};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::env;
@@ -32,6 +32,12 @@ fn health() -> Json<serde_json::Value> {
         "service": "dollar-rates",
     }))
 }
+
+#[head("/")]
+fn health_head() {}
+
+#[head("/rates")]
+fn rates_head() {}
 
 #[get("/rates")]
 async fn get_rates(pool: &State<PgPool>) -> Json<serde_json::Value> {
@@ -175,5 +181,5 @@ async fn rocket() -> _ {
 
     rocket::custom(figment)
         .manage(pool)
-        .mount("/", routes![health, get_rates, get_rate_by_bank])
+        .mount("/", routes![health, health_head, rates_head, get_rates, get_rate_by_bank])
 }
