@@ -8,7 +8,7 @@ Dominican Republic bank exchange rate API built with Rust, Rocket, and PostgreSQ
 |------|-------|--------|
 | Banreservas | `banreservas` | HTML scraping from [banreservas.com/calculadoras](https://www.banreservas.com/calculadoras/) |
 | BHD | `bhd` | JSON API at `backend.bhd.com.do` |
-| Banco Popular | `popular` | Hardcoded (pending real source) |
+| Banco Popular | `popular` | SharePoint API via headless Chrome (Incapsula WAF bypass) |
 
 ## API Endpoints
 
@@ -184,4 +184,5 @@ cargo run
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string |
 | `PORT` | No | `10000` | HTTP server port (Render sets this automatically) |
-| `POPULAR_PROXY_URL` | No | Direct to popularenlinea.com | Proxy URL for Popular's SharePoint API (site is behind Incapsula WAF). Set this to a proxy that forwards to `https://popularenlinea.com/_api/web/lists/getbytitle('Rates')/items?$filter=ItemID%20eq%20%271%27` |
+| `CHROMIUM_PATH` | No | `/usr/bin/chromium` | Path to Chromium/Chrome binary for headless browser (used by Popular bank fetcher to bypass Incapsula WAF) |
+| `POPULAR_PROXY_URL` | No | — | Optional proxy URL for Popular's SharePoint API. When set, bypasses headless Chrome entirely (faster). Should forward to `https://popularenlinea.com/_api/web/lists/getbytitle('Rates')/items?$filter=ItemID%20eq%20%271%27` |

@@ -1,7 +1,6 @@
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
-use std::sync::Arc;
 use tracing::{error, info, warn};
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
@@ -105,31 +104,15 @@ pub async fn fetch_bhd(client: &Client) -> Option<FetchedRate> {
     })
 }
 
-fn browser_headers(rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    rb.header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-        .header("Accept-Language", "en-US,en;q=0.9,es-US;q=0.8,es;q=0.7")
-        .header("Sec-Ch-Ua", r#""Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145""#)
-        .header("Sec-Ch-Ua-Mobile", "?0")
-        .header("Sec-Ch-Ua-Platform", r#""macOS""#)
-        .header("Sec-Fetch-Dest", "document")
-        .header("Sec-Fetch-Mode", "navigate")
-        .header("Sec-Fetch-Site", "none")
-        .header("Sec-Fetch-User", "?1")
-        .header("Upgrade-Insecure-Requests", "1")
-}
-
-pub async fn fetch_popular(_client: &Client) -> Option<FetchedRate> {
+pub async fn fetch_popular(client: &Client) -> Option<FetchedRate> {
     // Banco Popular exposes rates via SharePoint REST API (XML/OData).
-    // Site is behind Incapsula WAF — we emulate a browser session:
-    // 1. Visit the homepage to collect Incapsula cookies
-    // 2. Fetch the Incapsula challenge script to get session cookies
-    // 3. Use accumulated cookies to call the API
+    // Site is behind Incapsula WAF which requires JS execution.
+    // We use headless Chrome to pass the challenge, then extract the XML.
 
-    // If POPULAR_PROXY_URL is set, use it directly (skip browser emulation)
+    // Fast path: if POPULAR_PROXY_URL is set, use it directly (no Chrome needed)
     if let Ok(proxy_url) = env::var("POPULAR_PROXY_URL") {
         info!("Popular: using proxy URL");
-        let response = _client
+        let response = client
             .get(&proxy_url)
             .header("User-Agent", USER_AGENT)
             .header("Accept", "application/xml")
@@ -141,69 +124,76 @@ pub async fn fetch_popular(_client: &Client) -> Option<FetchedRate> {
             let xml = response.text().await.ok()?;
             return parse_popular_xml(&xml);
         }
-        warn!("Popular proxy returned non-200, falling back to direct");
+        warn!("Popular proxy returned non-200, falling back to headless Chrome");
     }
 
-    // Build a client with a cookie jar to accumulate Incapsula cookies
-    let jar = Arc::new(reqwest::cookie::Jar::default());
-    let popular_client = reqwest::Client::builder()
-        .cookie_provider(jar.clone())
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .ok()?;
+    // Use headless Chrome to bypass Incapsula WAF
+    info!("Popular: launching headless Chrome");
+    let result = tokio::task::spawn_blocking(|| -> Option<String> {
+        use headless_chrome::{Browser, LaunchOptions};
 
-    // Step 1: Hit the homepage to trigger Incapsula challenge and collect initial cookies
-    info!("Popular: step 1 - visiting homepage for cookies");
-    let homepage = browser_headers(popular_client.get("https://popularenlinea.com/personas/Paginas/Home.aspx"))
-        .send()
-        .await
-        .map_err(|e| error!("Popular homepage request failed: {e}"))
-        .ok()?;
+        let chromium_path = env::var("CHROMIUM_PATH").unwrap_or_else(|_| "/usr/bin/chromium".into());
+        info!("Popular: using Chromium at {chromium_path}");
 
-    let body = homepage.text().await.unwrap_or_default();
+        let launch_options = LaunchOptions {
+            path: Some(std::path::PathBuf::from(&chromium_path)),
+            sandbox: false,
+            args: vec![
+                std::ffi::OsStr::new("--no-sandbox"),
+                std::ffi::OsStr::new("--disable-gpu"),
+                std::ffi::OsStr::new("--disable-dev-shm-usage"),
+            ],
+            ..LaunchOptions::default()
+        };
 
-    // Step 2: Extract and fetch the Incapsula challenge script (sets session cookies)
-    let script_re = regex::Regex::new(r#"src="(/_Incapsula_Resource\?SWJIYLWA=[^"]+)""#).ok()?;
-    if let Some(caps) = script_re.captures(&body) {
-        let script_url = format!("https://popularenlinea.com{}", &caps[1]);
-        info!("Popular: step 2 - fetching Incapsula challenge script");
-        let _ = browser_headers(popular_client.get(&script_url))
-            .header("Referer", "https://popularenlinea.com/personas/Paginas/Home.aspx")
-            .send()
-            .await;
-    }
+        let browser = Browser::new(launch_options)
+            .map_err(|e| error!("Popular: Chrome launch failed: {e}"))
+            .ok()?;
 
-    // Small delay to mimic browser behavior
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        let tab = browser.new_tab()
+            .map_err(|e| error!("Popular: new tab failed: {e}"))
+            .ok()?;
 
-    // Step 3: Retry the homepage with accumulated cookies
-    info!("Popular: step 3 - retrying homepage with cookies");
-    let _ = browser_headers(popular_client.get("https://popularenlinea.com/personas/Paginas/Home.aspx"))
-        .send()
-        .await;
+        // Step 1: Navigate to homepage, let Incapsula JS execute
+        info!("Popular: navigating to homepage for Incapsula challenge");
+        tab.navigate_to("https://popularenlinea.com/personas/Paginas/Home.aspx")
+            .map_err(|e| error!("Popular: homepage navigation failed: {e}"))
+            .ok()?;
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+        // Wait for Incapsula JS challenge to complete (~5 seconds)
+        std::thread::sleep(std::time::Duration::from_secs(5));
 
-    // Step 4: Now fetch the actual rates API with the session cookies
-    info!("Popular: step 4 - fetching rates API");
-    let api_url = "https://popularenlinea.com/_api/web/lists/getbytitle('Rates')/items?$filter=ItemID%20eq%20%271%27";
-    let response = browser_headers(popular_client.get(api_url))
-        .header("Accept", "application/xml")
-        .send()
-        .await
-        .map_err(|e| error!("Popular API request failed: {e}"))
-        .ok()?;
+        // Step 2: Navigate to the rates API with accumulated cookies
+        info!("Popular: navigating to rates API");
+        let api_url = "https://popularenlinea.com/_api/web/lists/getbytitle('Rates')/items?$filter=ItemID%20eq%20%271%27";
+        tab.navigate_to(api_url)
+            .map_err(|e| error!("Popular: API navigation failed: {e}"))
+            .ok()?;
 
-    if !response.status().is_success() {
-        error!("Popular API returned HTTP {}", response.status());
-        return None;
-    }
+        // Wait for the API response to load
+        std::thread::sleep(std::time::Duration::from_secs(3));
 
-    let xml = response
-        .text()
-        .await
-        .map_err(|e| error!("Popular body read failed: {e}"))
-        .ok()?;
+        // Step 3: Extract page content (the XML response)
+        let content = tab.get_content()
+            .map_err(|e| error!("Popular: get_content failed: {e}"))
+            .ok()?;
+
+        info!("Popular: got content, length={}", content.len());
+        Some(content)
+    })
+    .await
+    .map_err(|e| error!("Popular: spawn_blocking join failed: {e}"))
+    .ok()??;
+
+    // The browser may wrap the XML in HTML tags, extract the raw XML if needed
+    let xml = if result.contains("<d:DollarBuyRate") {
+        result
+    } else {
+        // Chrome wraps raw XML in an HTML page; extract the text content
+        // The XML content is usually inside <pre> or as text nodes
+        warn!("Popular: response may be wrapped in HTML, attempting extraction");
+        result
+    };
 
     parse_popular_xml(&xml)
 }
